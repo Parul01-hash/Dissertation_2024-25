@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""
+# export IGV BED + ±10 bp FASTA 
+
+# Inputs
+  - psph_top20_5mC_sites_fixed.csv  
+  - psph_reference.fasta            
+
+"""
+
+# Maping CP000058.1/CP000060.1 to NC_* keys by length
+import os, re
+import pandas as pd
+from pyfaidx import Fasta
+
+REF = "psph_reference.fasta"
+INPUT = "psph_top20_5mC_sites_fixed.csv"  # use your fixed CSV
+OUT_BED = "psph_5mC_cov30.bed"
+OUT_FA  = "psph_5mC_cov30_pm10.fa"
+MIN_COV = 30
+
+# Loading sites
+if os.path.exists(INPUT):
+    sites = pd.read_csv(INPUT)
+else:
+    sites = pd.read_csv("psph_top20_5mC_sites.tsv", sep="\t", header=None,
+                        names=["contig","start","end","coverage","n_mod","frac_mod","percent_mod"])
+sites["start"] = sites["start"].astype(int)
+sites["end"]   = sites["end"].astype(int)
+assert (sites["end"] - sites["start"] == 1).all(), "Each site must be 1 bp (end = start+1)."
+
+flt = sites.query("coverage >= @MIN_COV").copy()
+print(f"Sites total: {len(sites)} | passing cov≥{MIN_COV}: {len(flt)}")
+
+# BED output 
+flt[["contig","start","end"]].to_csv(OUT_BED, sep="\t", header=False, index=False)
+print(f"Wrote BED: {OUT_BED}")
+
+# Open FASTA, collect key lengths
+ref = Fasta(REF)
+key2len = {k: len(ref[k]) for k in ref.keys()}
+print("FASTA keys:", list(ref.keys()))
+
+# Name-based mapping 
+def map_by_name(contig: str):
+    base   = contig.split()[0]
+    nobase = re.sub(r"\.\d+$", "", base)
+    for cand in (base, nobase, f"NZ_{base}", f"NZ_{nobase}", f"NC_{base}", f"NC_{nobase}"):
+        if cand in ref:
+            return cand
+    return None
+
+# Length based fallback
+def map_by_length(max_end: int):
+    candidates = [k for k,L in key2len.items() if L >= max_end]
+    if candidates:
+        return min(candidates, key=lambda k: key2len[k])  
+    return max(key2len, key=lambda k: key2len[k])         
+
+# Build mapping for all contigs present 
+mapping = {}
+for contig, sub in flt.groupby("contig"):
+    key = map_by_name(contig)
+    if key is None:
+        max_end = int(sub["end"].max())
+        key = map_by_length(max_end)
+    mapping[contig] = key
+
+print("Contig mapping:")
+for c,k in mapping.items():
+    print(f"  {c} -> {k} (len={key2len[k]:,})")
+
+# Writing ±10 bp FASTA (center oriented to C)
+def revcomp(s: str) -> str:
+    return s.translate(str.maketrans("ACGTacgtNn","TGCAtgcaNn"))[::-1]
+
+def window_pm10(row, flank=10):
+    key = mapping[row.contig]
+    s, e = int(row.start), int(row.end)
+    left, right = max(0, s - flank), e + flank
+    seq   = ref[key][left:right].seq.upper()
+    center = ref[key][s:e].seq.upper()
+    if center == "G":           # orient so center is always C
+        seq = revcomp(seq); center = "C"
+    return seq, center, key
+
+written = 0
+with open(OUT_FA, "w") as out:
+    for _, r in flt.iterrows():
+        seq, center, key = window_pm10(r, flank=10)
+        out.write(f">{r.contig}:{int(r.start)}-{int(r.end)}|ref={key}|cov={int(r.coverage)}|pct={float(r.percent_mod):.2f}|center={center}\n{seq}\n")
+        written += 1
+
+print(f"Wrote FASTA: {OUT_FA}  (records: {written})")
