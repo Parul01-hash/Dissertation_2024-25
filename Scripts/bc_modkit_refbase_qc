@@ -1,1 +1,65 @@
+#!/usr/bin/env python3
+"""
+Bacillus modkit loader + reference-base QC.
+
+Inputs 
+
+- bc_hotspots_6mA.bed        
+- bc_hotspots_5mC.bed        
+- bc_reference.fasta         
+      
+
+Outputs
+-------
+- Prints:  mismatch: 
+- In-memory DataFrame `df` with columns:
+  chrom, position, strand, modification, valid_cov, frac_mod, n_mod,
+  chrom_ref, ref_base, expected_base
+"""
+
+import pandas as pd
+
+def load_bed_modkit(path):
+    # ONT modkit bedMethyl 
+    cols = ["chrom","start","end","mod_code","score","strand",
+            "thickStart","thickEnd","itemRgb",
+            "valid_cov","frac_mod","n_mod",
+            "n_canon","n_other_mod","n_del","n_fail","n_diff","n_nocall"]
+    d = pd.read_csv(path, sep="\t", header=None, names=cols)
+
+    
+    d["position"]     = d["start"]                     
+    d["modification"] = d["mod_code"].map({"a":"6mA","m":"5mC"}).fillna(d["mod_code"])
+    d["percent_mod"]  = d["frac_mod"] * 100
+    return d[["chrom","position","strand","modification","valid_cov","frac_mod","n_mod"]]
+
+# Loading Bacillus 6mA/5mC hotspots and combine
+# merging into one analysis table
+df_6ma = load_bed_modkit("bc_hotspots_6mA.bed")
+df_5mc = load_bed_modkit("bc_hotspots_5mC.bed")
+df     = pd.concat([df_6ma, df_5mc], ignore_index=True)
+
+# Maping contigs to FASTA and fetch  ref base per site
+# Enables strand/base sanity checks
+df["chrom_ref"] = df["chrom"].map(to_ref_name)
+
+from pyfaidx import Fasta
+ref = Fasta("bc_reference.fasta")
+
+def ref_base(chrom_ref, start_0b):
+    return ref[chrom_ref][int(start_0b):int(start_0b)+1].seq.upper()
+
+df["ref_base"] = df.apply(lambda r: ref_base(r["chrom_ref"], r["position"]), axis=1)
+
+# sanity/QC check 
+# compute expected base from mod+strand,
+def expected_base(mod, strand):
+    if mod == "6mA": return "A" if strand != "-" else "T"
+    if mod == "5mC": return "C" if strand != "-" else "G"
+    return "N"
+
+df["expected_base"] = df.apply(lambda r: expected_base(r["modification"], r["strand"]), axis=1)
+is_nt = df["ref_base"].isin(list("ACGT"))
+mismatch_rate = (df.loc[is_nt, "ref_base"] != df.loc[is_nt, "expected_base"]).mean()
+print("mismatch:", mismatch_rate)    
 
