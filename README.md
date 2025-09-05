@@ -1,5 +1,5 @@
-# Dissertation
-Detection and Comparative Analysis of 5mC and 6mA Modifications in Bacillus cereus and Pseudomonas
+This repository contains code and minimal data to reproduce figures and tables for my dissertation project comparing DNA methylation (5mC, 6mA) between B. cereus and P. syringae.
+# Detection and Comparative Analysis of 5mC and 6mA Modifications in Bacillus cereus and Pseudomonas
 
 # REQUIREMENTS
   - Python 3.9+
